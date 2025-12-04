@@ -1,0 +1,33 @@
+
+Endpoint /ask receives:
+
+	JSON: { "question": "text..." }
+
+Step 1: Call LLM with:
+
+
+	System prompt = contents of cypher_prompt.txt
+
+	User = user question
+	→ Get back a Cypher query string.
+
+Step 2: Run that Cypher on Neo4j:
+
+	Use Python Neo4j driver, get rows as a list of dicts.
+
+Step 3: Call LLM again:
+
+	System: “You explain Neo4j query results to factory engineers.”
+
+	User: include
+
+	original question
+
+	the Cypher query
+
+	the result rows (as JSON/text)
+	→ Get back a natural‑language explanation.
+
+	Return that explanation as the /ask response.
+
+This is your complete LLM + KG pipeline design.

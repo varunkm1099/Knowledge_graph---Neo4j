@@ -1,0 +1,316 @@
+text
+# AI4I Knowledge Graph Q&A  
+Neo4j + OpenAI LLM + FastAPI + React
+
+This project is an **interactive Q&A system** over the AI4I industrial dataset.  
+A user asks **natural‑language questions** in a web UI, and the system:
+
+1. Translates the question into a **Cypher** query using an LLM.  
+2. Executes the Cypher on a **Neo4j knowledge graph**.  
+3. Uses the LLM again to **explain the raw results in plain English**.  
+4. Shows both the **answer** and the underlying **query + data** in a modern React UI.
+
+It demonstrates how to combine **knowledge graphs**, **LLMs**, and a **web frontend** into a single, explainable application.
+
+***
+
+## 1. High‑level overview
+
+From the user’s perspective:
+
+- You open a web page.
+- You type a question like _“How many runs had TWF failures?”_.
+- The app replies with a clear explanation (e.g. “There were 339 runs…”), and you can inspect:
+  - the **generated Cypher query**,
+  - the **exact rows** returned from Neo4j.
+
+From the system’s perspective, each question goes through this pipeline:
+
+1. **React frontend** → sends the question to FastAPI (`/ask`).  
+2. **FastAPI** → calls the **pipeline**.  
+3. **LLM** → generates Cypher based on the schema & examples.  
+4. **Neo4j** → executes Cypher and returns result rows.  
+5. **LLM** → turns those rows into a short explanation.  
+6. **FastAPI** → returns `question`, `cypher`, `rows`, `answer` as JSON.  
+7. **React** → renders a chat bubble for the answer + a details panel with Cypher & rows.
+
+***
+
+## 2. Tech stack
+
+**Backend**
+
+- **Python 3**
+- **FastAPI** – REST API (`/ask`)
+- **Neo4j** – graph database containing AI4I data
+- **Neo4j Python Driver** – for running Cypher
+- **OpenAI API** – LLM for:
+  - Cypher generation (`generate_cypher`)
+  - Natural‑language explanation (`explain_answer`)
+
+**Frontend**
+
+- **React (Create React App)** – SPA frontend
+- **Fetch API** – calls `POST /ask`
+- Custom **CSS‑in‑JS** styling (no extra UI library)
+
+***
+
+## 3. Project structure (key files)
+
+**Root (`neo4j/`)**
+
+- `config.py`  
+  - Stores:
+    - `OPENAI_API_KEY`
+    - `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`
+  - `SCHEMA_PROMPT`: prompt with schema description + multiple Q→Cypher examples.
+
+- `neo4j_client.py`  
+  - Creates a Neo4j driver using the config.
+  - `run_cypher(query, params)`:
+    - runs the query,
+    - converts Neo4j records to plain Python `dict`s (JSON‑safe).
+
+- `llm_client.py`  
+  - `generate_cypher(question)`:
+    - sends the `SCHEMA_PROMPT` + question to OpenAI,
+    - returns a **single Cypher string**.
+  - `explain_answer(question, cypher, rows)`:
+    - sends question, Cypher, and rows to OpenAI with a “plain text, no markdown” instruction,
+    - returns a short explanation (3–5 sentences).
+
+- `pipeline.py`  
+  - `answer_question(question)`:
+    1. `generate_cypher(question)`
+    2. `run_cypher(cypher)`
+    3. `explain_answer(question, cypher, rows)`
+    4. returns a dict:  
+       `{"question": ..., "cypher": ..., "rows": ..., "answer": ...}`
+
+- `api.py`  
+  - FastAPI app:
+    - CORS configured for `http://localhost:3000`
+    - `POST /ask` endpoint:
+      - request: `{ "question": "..." }`
+      - response: `{ "question", "cypher", "rows", "answer" }`
+
+**Frontend (`neo4j/frontend/`)**
+
+- `src/App.js`  
+  - Main React component:
+    - Chat‑style layout (user + AI bubbles)
+    - Suggested questions
+    - “Query details” panel (shows Cypher & rows of the last answer)
+    - Uses `fetch("http://localhost:8000/ask", ...)` to call the backend.
+
+***
+
+## 4. Data & knowledge graph modeling
+
+The AI4I dataset is modeled as a **knowledge graph** in Neo4j.
+
+**Nodes**
+
+- `Machine`  
+  - Properties: `productId`, `type`, etc.
+
+- `Measurement`  
+  - Properties: `udi`, `airTemperature`, `processTemperature`,
+    `rotationalSpeed`, `torque`, `toolWear`, etc.
+
+- `Failure`
+
+- `FailureType`  
+  - Boolean properties: `TWF`, `HDF`, `PWF`, `OSF`, `RNF`
+
+**Relationships**
+
+- `(Machine)-[:HAS_MEASUREMENT]->(Measurement)`
+- `(Measurement)-[:HAS_FAILURE]->(Failure)`
+- `(Failure)-[:OF_TYPE]->(FailureType)`
+
+This structure lets Cypher answer questions like:
+
+- “How many runs had TWF failures?”  
+- “What is the average torque when TWF failures occur?”  
+- “Which failure type occurs most often?”
+
+***
+
+## 5. LLM‑driven workflow (detailed)
+
+### 5.1 Cypher generation
+
+The `SCHEMA_PROMPT` in `config.py` describes:
+
+- The graph schema (nodes, relationships).
+- Important rules (e.g., “count measurement runs, use boolean flags on FailureType”).
+- Several explicit examples:
+
+- Q: _How many runs had TWF failures?_ → Cypher with `WHERE ft.TWF = true`.
+- Q: _What is the average torque when TWF failures happen?_ → `avg(me.torque)`.
+- Q: _Which failure type occurs most often?_ → sums over `ft.TWF`, `ft.HDF`, etc.
+
+`generate_cypher(question)` sends this prompt plus the new question to the LLM.  
+Because of the examples, the model tends to output valid, schema‑compatible Cypher.
+
+### 5.2 Query execution
+
+`run_cypher(query)`:
+
+- Opens a Neo4j session via the official driver.
+- Executes the generated Cypher.
+- Converts each `Record` to a plain dict `{column_name: value}`.
+- Returns `list[dict]`.
+
+### 5.3 Explanation
+
+`explain_answer(question, cypher, rows)`:
+
+- System message: “Explain for factory engineers, 3–5 sentences, plain text only.”
+- User content: includes the original question, the Cypher, and rows.
+- The LLM produces a short explanation:
+  - e.g., “There are 10,000 unique runs that experienced some type of failure…”
+
+This explanation plus the raw Cypher & rows are sent back to the frontend.
+
+***
+
+## 6. Running the project from a fresh GitHub clone
+
+Assume you cloned the repo into `C:\Users\varun\Desktop\neo4j`.
+
+### 6.1 Prerequisites
+
+- Python 3.x + `pip`
+- Node.js + npm
+- A Neo4j database (Aura or local) with the AI4I graph loaded
+- An OpenAI API key
+
+***
+
+### 6.2 Backend setup
+
+1. **Go to project root**
+
+```bash
+cd C:\Users\varun\Desktop\neo4j
+Create and activate a virtual environment (optional but recommended)
+
+bash
+python -m venv .venv
+.\.venv\Scripts\activate
+Install Python dependencies
+
+Make sure requirements.txt includes:
+
+text
+fastapi
+uvicorn
+neo4j
+openai
+Then run:
+
+bash
+pip install -r requirements.txt
+Configure config.py
+
+Open config.py and set:
+
+python
+OPENAI_API_KEY = "sk-..."  # your real key
+
+NEO4J_URI = "neo4j+s://<your-id>.databases.neo4j.io"
+NEO4J_USER = "neo4j"
+NEO4J_PASSWORD = "<your-aura-password>"
+Check that SCHEMA_PROMPT is present and includes the schema + examples.
+
+Start FastAPI
+
+bash
+uvicorn api:app --reload
+You should see logs like:
+
+Uvicorn running on http://127.0.0.1:8000
+
+Application startup complete
+
+Test in browser:
+
+Open http://127.0.0.1:8000/docs
+
+Try the /ask endpoint with a simple JSON body:
+
+json
+{ "question": "How many runs had TWF failures?" }
+6.3 Frontend setup
+Go to frontend folder
+
+bash
+cd C:\Users\varun\Desktop\neo4j\frontend
+Install npm dependencies
+
+bash
+npm install
+Start React dev server
+
+bash
+npm start
+This opens http://localhost:3000 in your browser.
+
+Important: Keep the backend (uvicorn api:app --reload) running at the same time.
+
+7. Using the app
+Once both servers are running:
+
+Open http://localhost:3000
+
+Try questions like:
+
+How many runs had TWF failures?
+
+What is the average torque when TWF failures happen?
+
+For TWF failures, what are the average torque and average tool wear?
+
+Which failure type occurs most often in the data?
+
+How many total runs had any kind of failure?
+
+For each question you can see:
+
+A chat answer (clear English explanation)
+
+On the right, a panel with:
+
+the exact Cypher query
+
+the raw rows from Neo4j
+
+This lets you verify the correctness of the answer and understand how it was computed.
+
+8. What this project demonstrates
+End‑to‑end pipeline from natural language → graph query → structured data → explanation.
+
+Knowledge graph modeling of real industrial data (AI4I) in Neo4j.
+
+LLM‑guided Cypher generation using schema + in‑prompt examples.
+
+Data‑grounded reasoning: the model must query Neo4j; it cannot just “hallucinate” values.
+
+Explainability and transparency: UI exposes the Cypher and raw results.
+
+Modern user experience: a clean, chat‑style React interface suitable for demos or thesis work.
+
+From a reader’s point of view, this README should give:
+
+A clear overview of what the project does.
+
+An understanding of the architecture and workflow.
+
+Exact steps to install, run, and test the system from a GitHub clone.
+
+text
+
+If you read this as someone new to the project, do you feel you could clone the repo and get it running just by following these steps?

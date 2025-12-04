@@ -1,0 +1,8 @@
+ai4i-kg-llm/
+  ├─ config.py
+  ├─ neo4j_client.py
+  ├─ llm_client.py
+  ├─ pipeline.py
+  ├─ main.py
+  ├─ requirements.txt
+  └─ README.md
